@@ -1,6 +1,7 @@
 import json
+import math
 from io import BytesIO
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import matplotlib.pyplot as plt
 from matplotlib.patches import Arc, FancyArrowPatch, Polygon, Rectangle
@@ -63,7 +64,15 @@ def fmt_tol(value: Any, plus: Any, minus: Any, unit: str = "mm") -> str:
     return f"{value:g} {unit}  +{plus:g} / -{minus:g}"
 
 
-def dim_arrow(ax, p1: Tuple[float, float], p2: Tuple[float, float], text: str, text_offset=(0, 0), lw=1.0):
+def dim_arrow(
+    ax,
+    p1: Tuple[float, float],
+    p2: Tuple[float, float],
+    text: str,
+    text_offset=(0, 0),
+    lw=1.0,
+    text_rotation: Optional[float] = None,
+):
     arrow = FancyArrowPatch(
         p1,
         p2,
@@ -77,7 +86,22 @@ def dim_arrow(ax, p1: Tuple[float, float], p2: Tuple[float, float], text: str, t
     ax.add_patch(arrow)
     tx = (p1[0] + p2[0]) / 2 + text_offset[0]
     ty = (p1[1] + p2[1]) / 2 + text_offset[1]
-    ax.text(tx, ty, text, fontsize=8, ha="center", va="center", bbox=dict(facecolor="white", edgecolor="none", pad=0.5))
+    rotation = text_rotation
+    if rotation is None:
+        dx = p2[0] - p1[0]
+        dy = p2[1] - p1[1]
+        rotation = math.degrees(math.atan2(dy, dx))
+    ax.text(
+        tx,
+        ty,
+        text,
+        fontsize=8,
+        rotation=rotation,
+        rotation_mode="anchor",
+        ha="center",
+        va="center",
+        bbox=dict(facecolor="white", edgecolor="none", pad=0.5),
+    )
 
 
 def safe_get(spec: Dict[str, Any], path: str, default: float = 0.0) -> float:
@@ -167,7 +191,7 @@ def render(spec: Dict[str, Any]):
     ax_front.plot([L, L], [0, -16], color="black", linewidth=0.8)
 
     # Vertical dimensions: CA and total width
-    dim_arrow(ax_front, (L + 6, ca_y0), (L + 6, ca_y0 + CAy), f"{CAy:g}", text_offset=(5, 0), lw=0.8)
+    dim_arrow(ax_front, (L + 6, ca_y0), (L + 6, ca_y0 + CAy), f"{CAy:g}", text_offset=(2, 0), lw=0.8)
     ax_front.plot([L, L + 6], [ca_y0, ca_y0], color="black", linewidth=0.8)
     ax_front.plot([L, L + 6], [ca_y0 + CAy, ca_y0 + CAy], color="black", linewidth=0.8)
     ax_front.text(L + 11.5, W / 2, "Prüfbereich", fontsize=9, rotation=90, va="center", ha="center")
