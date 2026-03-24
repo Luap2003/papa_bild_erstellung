@@ -3,7 +3,7 @@ from io import BytesIO
 from typing import Any, Dict, Tuple
 
 import matplotlib.pyplot as plt
-from matplotlib.patches import FancyArrowPatch, Polygon, Rectangle
+from matplotlib.patches import Arc, FancyArrowPatch, Polygon, Rectangle
 import streamlit as st
 
 
@@ -110,19 +110,50 @@ def render(spec: Dict[str, Any]):
     ax_side = fig.add_subplot(gs[0, 1])
 
     # Front view (ISO-like style)
-    ax_front.add_patch(Rectangle((0, 0), L, W, fill=False, linewidth=1.5, color="black"))
+    left_ch = left.get("chamfer", {})
+    ch = max(0.0, safe_get(spec, "left_surface.chamfer.width_mm", 0.5))
+    ch = min(ch, L / 4, W / 4)
+
+    def chamfered_rect_points(x0: float, y0: float, w: float, h: float, c: float):
+        c_eff = min(max(0.0, c), w / 4, h / 4)
+        return [
+            (x0 + c_eff, y0 + h),
+            (x0 + w - c_eff, y0 + h),
+            (x0 + w, y0 + h - c_eff),
+            (x0 + w, y0 + c_eff),
+            (x0 + w - c_eff, y0),
+            (x0 + c_eff, y0),
+            (x0, y0 + c_eff),
+            (x0, y0 + h - c_eff),
+        ]
+
+    # Outer contour chamfered (4x @45 deg)
+    ax_front.add_patch(Polygon(chamfered_rect_points(0, 0, L, W, ch), closed=True, fill=False, linewidth=1.0, color="black", zorder=3))
+    edge_inset = max(0.6, min(1.2, T * 0.15))
+    # Inner contour straight
+    ax_front.add_patch(
+        Rectangle(
+            (edge_inset, edge_inset),
+            L - 2 * edge_inset,
+            W - 2 * edge_inset,
+            fill=False,
+            linewidth=0.9,
+            color="black",
+            zorder=3,
+        )
+    )
 
     ca_x0 = (L - CAx) / 2
     ca_y0 = (W - CAy) / 2
-    ax_front.add_patch(Rectangle((ca_x0, ca_y0), CAx, CAy, fill=False, hatch="xx", linewidth=1.0, color="black"))
+    ax_front.add_patch(Rectangle((ca_x0, ca_y0), CAx, CAy, fill=False, hatch="xx", linewidth=0.8, color="black"))
 
     # Horizontal dimensions: CA and total length
-    dim_arrow(ax_front, (ca_x0, -7), (ca_x0 + CAx, -7), f"{CAx:g}", text_offset=(0, -2))
+    dim_arrow(ax_front, (ca_x0, -7), (ca_x0 + CAx, -7), f"{CAx:g}", text_offset=(0, -2), lw=0.8)
     ax_front.text((ca_x0 * 2 + CAx) / 2, -12.0, "Prüfbereich", fontsize=9, ha="center", va="center")
     ax_front.plot([ca_x0, ca_x0], [0, -9], color="black", linewidth=0.8)
     ax_front.plot([ca_x0 + CAx, ca_x0 + CAx], [0, -9], color="black", linewidth=0.8)
     ax_front.plot([L, L], [0, -9], color="black", linewidth=0.8)
-    dim_arrow(ax_front, (ca_x0 + CAx, -7), (L, -7), f"{(L - (ca_x0 + CAx)):g}", text_offset=(0, -2))
+    dim_arrow(ax_front, (ca_x0 + CAx, -7), (L, -7), f"{(L - (ca_x0 + CAx)):g}", text_offset=(0, -2), lw=0.8)
 
     dim_arrow(
         ax_front,
@@ -130,12 +161,13 @@ def render(spec: Dict[str, Any]):
         (L, -16),
         f"{L:g} ±{g.get('length_tol_plus', 0):g}",
         text_offset=(0, -2),
+        lw=0.8,
     )
     ax_front.plot([0, 0], [0, -16], color="black", linewidth=0.8)
     ax_front.plot([L, L], [0, -16], color="black", linewidth=0.8)
 
     # Vertical dimensions: CA and total width
-    dim_arrow(ax_front, (L + 6, ca_y0), (L + 6, ca_y0 + CAy), f"{CAy:g}", text_offset=(5, 0))
+    dim_arrow(ax_front, (L + 6, ca_y0), (L + 6, ca_y0 + CAy), f"{CAy:g}", text_offset=(5, 0), lw=0.8)
     ax_front.plot([L, L + 6], [ca_y0, ca_y0], color="black", linewidth=0.8)
     ax_front.plot([L, L + 6], [ca_y0 + CAy, ca_y0 + CAy], color="black", linewidth=0.8)
     ax_front.text(L + 11.5, W / 2, "Prüfbereich", fontsize=9, rotation=90, va="center", ha="center")
@@ -146,23 +178,71 @@ def render(spec: Dict[str, Any]):
         (L + 13, W),
         f"{W:g} ±{g.get('width_tol_plus', 0):g}",
         text_offset=(7, 0),
+        lw=0.8,
     )
     ax_front.plot([L, L + 13], [0, 0], color="black", linewidth=0.8)
     ax_front.plot([L, L + 13], [W, W], color="black", linewidth=0.8)
 
-    # Simple chamfer note on front top-left similar to reference
-    left_ch = left.get("chamfer", {})
-    ax_front.plot([-10, 0], [W + 10, W], color="black", linewidth=0.8)
+    # Chamfer annotation styled like the reference: slanted size + (4x) + angle callout
+    p_a = (0.0, W - ch)  # left endpoint of top-left chamfer
+    p_b = (ch, W)  # top endpoint of top-left chamfer
+    n = (-1.0 / (2**0.5), 1.0 / (2**0.5))  # outward normal for top-left chamfer
+    ext = 6.0
+    a_ext = (p_a[0] + n[0] * ext, p_a[1] + n[1] * ext)
+    b_ext = (p_b[0] + n[0] * ext, p_b[1] + n[1] * ext)
+    ax_front.plot([p_a[0], a_ext[0]], [p_a[1], a_ext[1]], color="black", linewidth=0.8)
+    ax_front.plot([p_b[0], b_ext[0]], [p_b[1], b_ext[1]], color="black", linewidth=0.8)
+    ax_front.add_patch(
+        FancyArrowPatch(
+            a_ext,
+            b_ext,
+            arrowstyle="<->",
+            mutation_scale=9,
+            linewidth=0.8,
+            color="black",
+            shrinkA=0,
+            shrinkB=0,
+        )
+    )
+    m = ((a_ext[0] + b_ext[0]) / 2, (a_ext[1] + b_ext[1]) / 2)
     ax_front.text(
-        -16,
-        W + 13,
-        f"{left_ch.get('width_mm', '-')} ±{left_ch.get('tolerance_mm', '-')} (4x)",
+        m[0] - 0.2,
+        m[1] + 1.7,
+        f"{left_ch.get('width_mm', '-')} ±{left_ch.get('tolerance_mm', '-')}",
         fontsize=8,
-        rotation=52,
-        ha="left",
+        rotation=55,
+        ha="center",
         va="center",
     )
-    ax_front.text(-2, W + 7.5, f"{left_ch.get('angle_deg', '-')}°", fontsize=8, rotation=-55, ha="left", va="center")
+    ax_front.text(m[0] + 1.6, m[1] + 0.1, "(4x)", fontsize=8, rotation=55, ha="center", va="center")
+
+    # 45° angle callout near the corner with tolerance (placed to the right of corner)
+    left_angle = left_ch.get("angle_deg", 45)
+    left_angle_tol = left_ch.get("angle_tolerance_deg", 2)
+    ax_front.plot([p_b[0], p_b[0] + 6.0], [p_b[1], p_b[1]], color="black", linewidth=0.8)
+    ax_front.add_patch(Arc((p_b[0], p_b[1]), 7.0, 7.0, angle=0, theta1=180, theta2=225, linewidth=0.8, color="black"))
+    ax_front.add_patch(
+        FancyArrowPatch(
+            (p_b[0] - 2.45, p_b[1] - 2.45),
+            (p_b[0] - 1.95, p_b[1] - 1.95),
+            arrowstyle="-|>",
+            mutation_scale=8.5,
+            linewidth=0.8,
+            color="black",
+        )
+    )
+    ax_front.add_patch(
+        FancyArrowPatch(
+            (p_b[0] + 0.05, p_b[1] + 3.45),
+            (p_b[0] + 0.05, p_b[1] + 2.85),
+            arrowstyle="-|>",
+            mutation_scale=8.5,
+            linewidth=0.8,
+            color="black",
+        )
+    )
+    ax_front.text(p_b[0] + 6.5, p_b[1] + 1.0, f"{left_angle}°", fontsize=8, ha="left", va="bottom")
+    ax_front.text(p_b[0] + 6.5, p_b[1] - 1.2, f"±{left_angle_tol}°", fontsize=8, ha="left", va="top")
 
     ax_front.set_xlim(-22, L + 25)
     ax_front.set_ylim(-22, W + 18)
@@ -199,8 +279,34 @@ def render(spec: Dict[str, Any]):
         ha="left",
         va="center",
     )
-    ax_side.text(T + 1.3, W * 0.68, f"{right_ch.get('angle_deg', '-')}°", fontsize=12, rotation=35, ha="left", va="center")
-    ax_side.text(T + 4.4, W * 0.62, "±2°", fontsize=8, rotation=35, ha="left", va="center")
+    # 30° angle callout with tolerance and visible arc/arrow at the chamfer corner
+    right_angle = right_ch.get("angle_deg", 30)
+    right_angle_tol = right_ch.get("angle_tolerance_deg", 2)
+    corner = (T - rc_eff, W)
+    ax_side.add_patch(Arc(corner, 12.0, 12.0, angle=0, theta1=238, theta2=270, linewidth=0.8, color="black"))
+    ax_side.add_patch(
+        FancyArrowPatch(
+            (corner[0] + 0.0, corner[1] - 5.9),
+            (corner[0] + 0.0, corner[1] - 5.2),
+            arrowstyle="-|>",
+            mutation_scale=8.5,
+            linewidth=0.8,
+            color="black",
+        )
+    )
+    ax_side.add_patch(
+        FancyArrowPatch(
+            (corner[0] - 3.1, corner[1] - 4.6),
+            (corner[0] - 2.7, corner[1] - 4.0),
+            arrowstyle="-|>",
+            mutation_scale=8.5,
+            linewidth=0.8,
+            color="black",
+        )
+    )
+    ax_side.plot([corner[0], corner[0] + 4.5], [corner[1], corner[1] - 7.2], color="black", linewidth=0.8)
+    ax_side.text(T + 1.1, W * 0.72, f"{right_angle}°", fontsize=11, rotation=35, ha="left", va="center")
+    ax_side.text(T + 3.0, W * 0.65, f"±{right_angle_tol}°", fontsize=8, rotation=35, ha="left", va="center")
 
     # Bottom thickness dimension and geometric tolerance frame
     dim_arrow(
