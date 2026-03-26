@@ -1,15 +1,34 @@
+import base64
 import json
 import math
 import os
+import sys
 import tempfile
 from copy import deepcopy
 from io import BytesIO
 from typing import Any, Dict, Iterable, Optional, Set, Tuple
 
+# Ensure the second_try directory is on sys.path so the drawing modules resolve
+_THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+if _THIS_DIR not in sys.path:
+    sys.path.insert(0, _THIS_DIR)
+
 import matplotlib.pyplot as plt
 from matplotlib.patches import Arc, FancyArrowPatch, Polygon, Rectangle
 import streamlit as st
 import plotly.graph_objects as go
+from reportlab.lib.pagesizes import A4, landscape
+from reportlab.pdfgen import canvas as rl_canvas
+
+from drawing_helpers import (
+    F_LEFT, F_RIGHT, F_BOTTOM, F_TOP,
+    C_BLACK, LW_MEDIUM,
+)
+from drawing_helpers import draw_line as rl_draw_line, draw_text as rl_draw_text
+from draw_border import draw_border
+from draw_title_block import draw_title_block
+from draw_cross_section import draw_cross_section, draw_dimensions
+from draw_iso_table import draw_iso_table, draw_roughness_symbol, draw_standards_box
 
 try:
     import cadquery as cq
@@ -18,6 +37,52 @@ except Exception:
 
 
 DEFAULT_JSON = {
+    "substrate_type": "plane",
+    "title_block": {
+        "document_nr": "000000-1061-510/01",
+        "doc_type": "FUM",
+        "part_doc": "001",
+        "version": "03",
+        "sheet": "1",
+        "sheets_total": "1",
+        "designation": "Kopieträger (75x65x6) mm³",
+        "project_classification": "P54263232",
+        "component_level": "T",
+        "component_counter": "O",
+        "component_char": "",
+        "construction_group": "K54",
+        "scale": "1:1",
+        "format": "A4",
+        "created_by": "",
+        "created_date": "",
+        "checked_by": "",
+        "checked_date": "",
+        "technical_by": "",
+        "technical_date": "",
+        "norm_by": "",
+        "norm_date": "",
+        "released_by": "",
+        "released_date": "",
+        "mass": "",
+        "model_name": "",
+        "model_version": "",
+        "surface_treatment": "-",
+        "material_description": "Fa. Schott / N-BK7",
+        "gs_required": "nein",
+        "general_tolerance": "ISO 10110 - 11",
+        "size_standard": "ISO 14405",
+        "edge_standard": "ISO 13715",
+        "surface_standard": "ISO 10110 - 8",
+        "drawing_standard": "ISO 10110",
+        "rohs_note": "Werkstoffe, Schichten und Hilfsstoffe müssen\nRoHS konform sein gemäß Direktive 2015/863/EU.",
+        "cz_position": "",
+        "tolerances": {
+            "plus_large": "+0.50",
+            "minus_large": "-0.05",
+            "plus_small": "+0.05",
+            "minus_small": "-0.20",
+        },
+    },
     "geometry": {
         "length_mm": 75,
         "length_tol_plus": 0.1,
@@ -120,6 +185,19 @@ FORM_FIELDS = [
     ("right_surface.chamfer.tolerance_mm", "Rechte Fase Toleranz [mm]", "number", 0.01),
     ("right_surface.chamfer.angle_deg", "Rechte Fase Winkel [°]", "number", 1.0),
     ("surface_roughness.rq_nm", "Rauheit Rq [nm]", "number", 0.1),
+    ("title_block.document_nr", "Dokumenten-Nr.", "text", None),
+    ("title_block.designation", "Benennung", "text", None),
+    ("title_block.doc_type", "Dok.-Art", "text", None),
+    ("title_block.version", "Version", "text", None),
+    ("title_block.project_classification", "Projektklassifizierung", "text", None),
+    ("title_block.scale", "Maßstab", "text", None),
+    ("title_block.created_by", "Erstellt von", "text", None),
+    ("title_block.created_date", "Erstellt am", "text", None),
+    ("title_block.checked_by", "Geprüft von", "text", None),
+    ("title_block.checked_date", "Geprüft am", "text", None),
+    ("title_block.mass", "Masse", "text", None),
+    ("title_block.material_description", "Werkstoff", "text", None),
+    ("title_block.surface_treatment", "Oberflächenbehandlung", "text", None),
 ]
 
 INFO_ROWS = [
@@ -135,6 +213,73 @@ def has_cadquery() -> bool:
 
 def deep_copy_default() -> Dict[str, Any]:
     return deepcopy(DEFAULT_JSON)
+
+
+def generate_iso_pdf_bytes(data: Dict[str, Any]) -> bytes:
+    """Generate an ISO 10110 compliant PDF from the spec dict, return as bytes."""
+    buf = BytesIO()
+    c = rl_canvas.Canvas(buf, pagesize=landscape(A4))
+    c.setAuthor("ISO 10110 Generator")
+    tb = data.get("title_block", {})
+    c.setTitle(f"ISO 10110 - {tb.get('designation', '')}")
+    c.setSubject(tb.get("document_nr", ""))
+
+    draw_border(c)
+
+    frame_w = F_RIGHT - F_LEFT
+
+    TB_H = 58.0
+    lower_bottom = F_BOTTOM
+    lower_top = lower_bottom + TB_H
+
+    c.setStrokeColor(C_BLACK)
+    rl_draw_line(c, F_LEFT, lower_top, F_RIGHT, lower_top, lw=LW_MEDIUM)
+
+    tb_w = 180.0
+    tb_x = F_RIGHT - tb_w
+    draw_title_block(c, data, tb_x, lower_bottom, tb_w)
+
+    stb_w = tb_x - F_LEFT
+    draw_standards_box(c, data, F_LEFT, lower_bottom, stb_w, TB_H)
+
+    iso_table_top = lower_top + 48.0
+    iso_header_bottom = iso_table_top - 6.0
+    draw_iso_table(c, data, F_LEFT, iso_header_bottom, frame_w)
+
+    text_base = iso_table_top + 2
+    rl_draw_text(c, "Angaben nach ISO 10110", F_LEFT + 2, text_base,
+                 size=2.0, font="Helvetica-Bold")
+    rohs = tb.get("rohs_note", "").split('\n')
+    for i, line in enumerate(rohs):
+        rl_draw_text(c, line, F_LEFT + 2, text_base + 4 + (len(rohs) - 1 - i) * 3,
+                     size=1.6)
+
+    face_area_bottom = text_base + 4 + len(rohs) * 3 + 2
+
+    upper_top = F_TOP
+    upper_avail = upper_top - face_area_bottom
+    margin_above = 15.0
+    margin_below = 3.0
+    max_cs_h = upper_avail - margin_above - margin_below
+    geo = data.get("geometry", {})
+    geo_h = geo.get("width_mm", 65)
+    geo_w = geo.get("length_mm", 75)
+    max_cs_w = frame_w * 0.50
+    scale = min(max_cs_h / geo_h, max_cs_w / geo_w, 1.0)
+
+    cs_cx = F_LEFT + frame_w * 0.35
+    cs_cy = face_area_bottom + margin_below + (geo_h * scale) / 2.0
+
+    coords = draw_cross_section(c, data, cs_cx, cs_cy, scale)
+    draw_dimensions(c, data, coords)
+
+    sr = data.get("surface_roughness", {})
+    draw_roughness_symbol(c, sr.get("rq_nm", 1.2),
+                          sr.get("measurement_area", "P3"),
+                          coords["xr"] + 35, coords["yt"] + 8)
+
+    c.save()
+    return buf.getvalue()
 
 
 def safe_get(spec: Dict[str, Any], path: str, default: float = 0.0) -> float:
@@ -518,30 +663,34 @@ def build_cadquery_model(spec: Dict[str, Any]):
     W = max(0.1, safe_get(spec, "geometry.width_mm", 65))
     T = max(0.1, safe_get(spec, "geometry.thickness_mm", 6))
     lc = max(0.0, safe_get(spec, "left_surface.chamfer.width_mm", 0.0))
+    left_angle_deg = safe_get(spec, "left_surface.chamfer.angle_deg", 45.0)
     rc = max(0.0, safe_get(spec, "right_surface.chamfer.width_mm", 0.0))
     right_angle_deg = safe_get(spec, "right_surface.chamfer.angle_deg", 30.0)
 
     # Base optic body (centered at origin).
     wp = cq.Workplane("XY").box(L, W, T)
 
-    # 4x corner chamfer around the plate contour.
-    lc_eff = min(lc, L * 0.24, W * 0.24, T * 0.95)
-    if lc_eff > 0:
-        try:
-            wp = wp.edges("|Z").chamfer(lc_eff)
-        except Exception:
-            pass
+    # Keep angles in a sane non-degenerate range for tan().
+    left_angle = max(1.0, min(89.0, left_angle_deg))
+    right_angle = max(1.0, min(89.0, right_angle_deg))
 
-    # Single chamfer on one top side edge with configurable angle.
-    # We model this via asymmetric chamfer distances on adjacent faces.
-    rc_top = min(rc, L * 0.24, T * 0.95)
-    rc_drop = rc_top * math.tan(math.radians(max(1.0, min(89.0, right_angle_deg))))
-    rc_drop = max(0.05, min(rc_drop, W * 0.24, T * 0.95))
-    if rc_top > 0:
-        try:
-            wp = wp.edges(">Y and >Z").chamfer(rc_top, rc_drop)
-        except Exception:
-            pass
+    # Right-surface chamfer around the full perimeter of the optical face.
+    # Apply this first so all 4 perimeter edges get the requested 30°.
+    rc_run = min(rc, L * 0.24, W * 0.24)
+    rc_rise = rc_run * math.tan(math.radians(right_angle))
+    rc_rise = max(0.01, min(rc_rise, T * 0.95))
+    right_face_edges = wp.faces(">Z").edges()
+    if rc_run > 0 and right_face_edges.size() > 0:
+        wp = right_face_edges.chamfer(rc_run, rc_rise)
+
+    # 4x contour corner chamfer (vertical outer corner edges).
+    # Restrict to extreme X edges to avoid re-processing internal split edges.
+    lc_run = min(lc, L * 0.24, W * 0.24)
+    lc_rise = lc_run * math.tan(math.radians(left_angle))
+    lc_rise = max(0.01, min(lc_rise, L * 0.24, W * 0.24))
+    corner_edges = wp.edges("|Z and (<X or >X)")
+    if lc_run > 0 and corner_edges.size() > 0:
+        wp = corner_edges.chamfer(lc_run, lc_rise)
 
     return wp
 
@@ -583,6 +732,21 @@ def cadquery_to_plotly_figure(model) -> go.Figure:
         ),
     )
     return fig
+
+
+def cadquery_model_to_step_bytes(model) -> bytes:
+    shape = model.val()
+    fd, path = tempfile.mkstemp(suffix=".step")
+    os.close(fd)
+    try:
+        shape.exportStep(path)
+        with open(path, "rb") as f:
+            return f.read()
+    finally:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
 
 
 def cadquery_model_to_stl_bytes(model) -> bytes:
@@ -689,7 +853,11 @@ def render_form_tab():
             render_field(path, label, field_type, step)
 
     with st.expander("Oberfläche", expanded=False):
-        for path, label, field_type, step in FORM_FIELDS[23:]:
+        for path, label, field_type, step in FORM_FIELDS[23:24]:
+            render_field(path, label, field_type, step)
+
+    with st.expander("Titelblock (PDF)", expanded=False):
+        for path, label, field_type, step in FORM_FIELDS[24:]:
             render_field(path, label, field_type, step)
 
 
@@ -773,9 +941,7 @@ def main():
             st.pyplot(fig, clear_figure=True, use_container_width=True)
 
             svg_io = BytesIO()
-            pdf_io = BytesIO()
             fig.savefig(svg_io, format="svg", bbox_inches="tight")
-            fig.savefig(pdf_io, format="pdf", bbox_inches="tight")
             plt.close(fig)
 
             st.download_button(
@@ -784,20 +950,24 @@ def main():
                 file_name="optik_skizze.svg",
                 mime="image/svg+xml",
             )
+
+            iso_pdf_bytes = generate_iso_pdf_bytes(st.session_state["spec"])
             st.download_button(
-                "Als PDF exportieren",
-                data=pdf_io.getvalue(),
-                file_name="optik_skizze.pdf",
+                "Als ISO 10110 PDF exportieren",
+                data=iso_pdf_bytes,
+                file_name="optik_zeichnung.pdf",
                 mime="application/pdf",
             )
 
             st.markdown("---")
             st.subheader("3D Modell (CadQuery)")
+            step_bytes = None
             if has_cadquery():
                 model = build_cadquery_model(st.session_state["spec"])
                 if model is not None:
                     model_fig = cadquery_to_plotly_figure(model)
                     st.plotly_chart(model_fig, use_container_width=True, config={"displaylogo": False})
+                    step_bytes = cadquery_model_to_step_bytes(model)
                     st.download_button(
                         "Als STL exportieren",
                         data=cadquery_model_to_stl_bytes(model),
@@ -808,6 +978,22 @@ def main():
                     st.info("CadQuery-Modell konnte nicht erzeugt werden.")
             else:
                 st.info("Für die 3D-Ansicht bitte `cadquery` installieren.")
+
+            st.markdown("---")
+            export_data = {
+                "user_id": 1,
+                "spec": st.session_state["spec"],
+                "pdf": base64.b64encode(iso_pdf_bytes).decode("ascii"),
+            }
+            if step_bytes is not None:
+                export_data["step"] = base64.b64encode(step_bytes).decode("ascii")
+            export_payload = json.dumps(export_data, indent=2, ensure_ascii=False)
+            st.download_button(
+                "Komplettexport (JSON)",
+                data=export_payload,
+                file_name="optik_export.json",
+                mime="application/json",
+            )
 
             render_info_block(st.session_state["spec"], active_tags)
 
